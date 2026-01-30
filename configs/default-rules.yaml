@@ -1,0 +1,9 @@
+rules:
+  - id: "default-detect"
+    when:
+      sensor_is: ["nvme_ioctl", "boot_vfs", "block_raw"]
+    then:
+      severity: "info"
+      score_delta: 0
+      action: "observe"
+      message_template: "default rule"

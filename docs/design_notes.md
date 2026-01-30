@@ -21,6 +21,16 @@ deliver as an agent-executable repo: eBPF programs + a userspace daemon + rules 
 
 ---
 
+## implementation status
+
+- scaffolded repo layout per spec
+- event schema types and JSONL output plumbing implemented in userspace (no BPF yet)
+- config parser and minimal CLI (`run`, `validate`) with safe defaults
+- rules schema + parser stubs added; default rules file wired in config
+- basic rule matching and unit tests for rules + normalization
+
+---
+
 ## 2) target environment + constraints
 
 ### supported kernels (detection mode)
@@ -398,132 +408,3 @@ caches:
 - target overhead: <1–2% CPU on typical servers; must include sampling knobs
 - ringbuf backpressure:
   - if events drop, emit aggregated “dropped_events” metric and periodic warning
-- path strings are truncated; userspace should treat them as hints and cross-check with procfs when possible
-- avoid noisy boot writes:
-  - include allowlists for package managers (`apt`, `dpkg`, `rpm`, `dnf`), kernel installers, `grub-install`, `dracut`, `update-initramfs`
-  - severity depends on “known writer + maintenance window” logic
-
----
-
-## 13) testing plan (must be implemented)
-
-### 13.1 unit tests (go)
-- rules parsing + evaluation:
-  - first-match vs accumulate scoring correctness
-  - maintenance window boundary cases (explicit timezone)
-- normalization/enrichment:
-  - fd resolution behavior for dead processes
-  - hash caching semantics
-
-### 13.2 integration tests (best-effort; privileged)
-- `simulate_ioctl.c` issues dummy ioctls to a chosen fd; verify event emission path
-- `simulate_boot_write.sh` touches files under `/tmp/boot` using bind mount to simulate `/boot` (or uses actual `/boot` in a disposable VM/container)
-- optional: write to a loopback block device mapped as “nvme-like” (if feasible) to validate block tracepoint path
-
-integration acceptance:
-- daemon starts, loads BPF, receives at least one event from each enabled sensor
-- rules engine correctly classifies at least:
-  - one allowlisted boot write (info)
-  - one non-allowlisted boot write (high alert)
-  - one nvme ioctl attempt by unknown binary (high or critical depending config)
-
----
-
-## 14) acceptance criteria (definition of done)
-
-**MVP (detect-only)**
-- captures nvme ioctl attempts and correctly resolves `/proc/<pid>/fd/<fd>` path to `/dev/nvme*`
-- captures vfs writes/renames/unlinks for `/boot` and `/boot/efi` with a meaningful `file_path`
-- emits normalized JSON events with process enrichment
-- rules file loads; at least 6 default rules applied; severity/action computed
-- baseline snapshot + post-write hashing works (with debounce)
-
-**v1.0 (recommended)**
-- adds block-level raw write detection to ESP/boot partitions
-- includes prometheus metrics
-- includes systemd unit + install script
-- dry-run enforcement mode that logs would-block decisions
-- documentation: threat model + event schema + runbook
-
-**v1.1 (optional enforcement)**
-- eBPF LSM enforcement for nvme ioctl blocking (and optionally boot-plane file denies)
-- robust maintenance toggle with audit logging
-
----
-
-## 15) agent execution plan (ordered tasks)
-
-the agent (codex-like) should implement in this exact order:
-
-1) **repo scaffold**: create directories, Makefile, go.mod, minimal CLI (`run`, `validate`)
-2) **event schema**: define kernel C structs + matching Go structs; add decode/normalize
-3) **nvme_ioctl sensor**:
-   - BPF: tracepoints sys_enter_ioctl/sys_exit_ioctl
-   - Go: ringbuf reader, fd enrichment, `/dev/nvme*` filtering, JSON output
-4) **boot_vfs sensor**:
-   - BPF: fentry/kprobe vfs_write/vfs_rename/vfs_unlink, bpf_d_path, emit events
-   - Go: debounce hashing + baseline storage
-5) **rules engine**:
-   - YAML parser + evaluation + default rules
-6) **block_raw sensor**:
-   - BPF: block tracepoints; Go: mount→device mapping; classify ESP/boot partition writes
-7) **metrics + systemd**:
-   - prometheus metrics + service unit + install script
-8) **tests**:
-   - unit tests for rules
-   - integration harness scripts
-9) **docs**:
-   - threat model + runbook + example config
-
----
-
-## 16) threat model notes (must be written in `docs/threat_model.md`)
-
-include at least these adversary behaviors:
-
-- “firmware persistence attempt”: nvme admin ioctl from unusual binary, outside maintenance
-- “bootkit persistence attempt”: writes to ESP loader path, suspicious renames, or raw writes to ESP partition
-- “living-off-the-land”: attacker uses `nvme` tool legitimately but outside window; must still alert (allowlisting is not blanket immunity; it’s conditional)
-- “container escape staging”: container workload issuing nvme ioctls (rare and suspicious)
-
-also explicitly document false positives:
-- kernel updates
-- grub reinstall
-- initramfs regeneration
-- vendor storage management agents
-
----
-
-## 17) configuration example (must be shipped)
-
-`configs/nvme-guard.example.yaml` must include:
-- maintenance window weekdays 01:00–04:00 America/New_York
-- allowlisted binaries by sha256 placeholders
-- allowlisted comm names: `nvme`, `fwupd`, `grub-install`, `update-initramfs`, `dracut`, package managers
-- rules that:
-  - escalate nvme firmware/sanitize/format operations to critical if outside window
-  - escalate boot writes by unknown processes to high
-  - reduce severity if allowlisted + within window
-
----
-
-## 18) implementation risk register (for the agent to respect)
-
-- kernel symbols vary: prefer tracepoints; for vfs ops, prefer fentry (CO-RE) but allow kprobe fallback
-- `bpf_d_path` availability: if unavailable in chosen hook context, degrade gracefully:
-  - emit inode/dev and let userspace resolve via `/proc/<pid>/fd` when possible
-- high event volume on block layer: strict filtering + sampling must be implemented early
-
----
-
-## 19) deliverables checklist
-
-- [ ] `bin/nvme-guard` builds with `make build`
-- [ ] BPF objects generated with `make bpf`
-- [ ] example config + rules shipped
-- [ ] JSON event stream includes enrichment
-- [ ] baseline hashing works and is persisted
-- [ ] unit tests pass
-- [ ] integration harness exists (even if environment-dependent)
-- [ ] systemd service + install script
-- [ ] docs: threat model, event schema, runbook

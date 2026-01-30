@@ -1,0 +1,20 @@
+mode: detect
+output:
+  stdout: true
+  file: ""
+
+sensors:
+  nvme_ioctl: true
+  boot_vfs: true
+  block_raw: false
+
+paths:
+  boot_prefixes:
+    - /boot
+    - /boot/efi
+
+safety:
+  allow_enforce_on_single_nvme_root: false
+
+rules:
+  path: configs/default-rules.yaml
